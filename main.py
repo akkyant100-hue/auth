@@ -15,18 +15,17 @@ DB_FILE = 'database.db'
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    # Таблица хранит ключ и привязанный к нему HWID
     c.execute('''CREATE TABLE IF NOT EXISTS keys (key TEXT PRIMARY KEY, hwid TEXT)''')
     conn.commit()
     conn.close()
 
 init_db()
 
-def add_key_db(key, hwid="None"):
+def add_key_db(key):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     try:
-        c.execute("INSERT INTO keys (key, hwid) VALUES (?, ?)", (key, hwid))
+        c.execute("INSERT INTO keys (key, hwid) VALUES (?, ?)", (key, "None"))
         conn.commit()
         return True
     except sqlite3.IntegrityError:
@@ -53,12 +52,12 @@ def check_and_bind_key(key, hwid):
         
     saved_hwid = result[0]
     
-    # Если ключ еще не привязан (или был создан без HWID), привязываем его
-    if saved_hwid == "None" or saved_hwid == "":
+    # Если ключ еще не привязан, привязываем прямо сейчас
+    if saved_hwid == "None" or saved_hwid == "" or saved_hwid is None:
         c.execute("UPDATE keys SET hwid = ? WHERE key = ?", (hwid, key))
         conn.commit()
         conn.close()
-        return True, "Key bound to HWID successfully"
+        return True, "Bound to HWID"
         
     # Если HWID совпадает — пускаем
     if saved_hwid == hwid:
@@ -98,7 +97,7 @@ async def on_command_error(ctx, error):
 async def addkey(ctx, key: str):
     if add_key_db(key):
         print(f"[БАЗА] Добавлен ключ: {key}")
-        await ctx.send(f"✅ Ключ `{key}` успешно добавлен в базу! (HWID привяжется при первом входе)")
+        await ctx.send(f"✅ Ключ `{key}` успешно добавлен! (HWID привяжется при первом входе)")
     else:
         await ctx.send(f"⚠️ Ключ `{key}` уже существует.")
 
@@ -114,9 +113,10 @@ async def keys(ctx):
     if not db_keys:
         await ctx.send("База ключей пуста.")
     else:
-        msg = "**Активные ключи (Ключ -> HWID):**\n"
+        msg = "**Активные ключи:**\n"
         for k, hwid in db_keys:
-            msg += f"`{k}` -> `{hwid}`\n"
+            hwid_str = hwid if hwid != "None" else "Не привязан"
+            msg += f"`{k}` -> `{hwid_str}`\n"
         await ctx.send(msg)
 
 # === FLASK СЕРВЕР ===
