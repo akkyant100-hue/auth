@@ -15,17 +15,18 @@ DB_FILE = 'database.db'
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS keys (key TEXT PRIMARY KEY)''')
+    # Таблица хранит ключ и привязанный к нему HWID
+    c.execute('''CREATE TABLE IF NOT EXISTS keys (key TEXT PRIMARY KEY, hwid TEXT)''')
     conn.commit()
     conn.close()
 
 init_db()
 
-def add_key_db(key):
+def add_key_db(key, hwid="None"):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     try:
-        c.execute("INSERT INTO keys (key) VALUES (?)", (key,))
+        c.execute("INSERT INTO keys (key, hwid) VALUES (?, ?)", (key, hwid))
         conn.commit()
         return True
     except sqlite3.IntegrityError:
@@ -40,19 +41,38 @@ def del_key_db(key):
     conn.commit()
     conn.close()
 
-def check_key_db(key):
+def check_and_bind_key(key, hwid):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("SELECT key FROM keys WHERE key = ?", (key,))
+    c.execute("SELECT hwid FROM keys WHERE key = ?", (key,))
     result = c.fetchone()
-    conn.close()
-    return result is not None
+    
+    if not result:
+        conn.close()
+        return False, "Invalid Key"
+        
+    saved_hwid = result[0]
+    
+    # Если ключ еще не привязан (или был создан без HWID), привязываем его
+    if saved_hwid == "None" or saved_hwid == "":
+        c.execute("UPDATE keys SET hwid = ? WHERE key = ?", (hwid, key))
+        conn.commit()
+        conn.close()
+        return True, "Key bound to HWID successfully"
+        
+    # Если HWID совпадает — пускаем
+    if saved_hwid == hwid:
+        conn.close()
+        return True, "Valid"
+    else:
+        conn.close()
+        return False, "HWID Mismatch (Key used on another PC)"
 
 def get_all_keys():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("SELECT key FROM keys")
-    result = [row[0] for row in c.fetchall()]
+    c.execute("SELECT key, hwid FROM keys")
+    result = c.fetchall()
     conn.close()
     return result
 
@@ -78,18 +98,15 @@ async def on_command_error(ctx, error):
 async def addkey(ctx, key: str):
     if add_key_db(key):
         print(f"[БАЗА] Добавлен ключ: {key}")
-        await ctx.send(f"✅ Ключ `{key}` успешно добавлен в базу!")
+        await ctx.send(f"✅ Ключ `{key}` успешно добавлен в базу! (HWID привяжется при первом входе)")
     else:
         await ctx.send(f"⚠️ Ключ `{key}` уже существует.")
 
 @bot.command()
 async def delkey(ctx, key: str):
-    if check_key_db(key):
-        del_key_db(key)
-        print(f"[БАЗА] Удален ключ: {key}")
-        await ctx.send(f"🗑️ Ключ `{key}` удален.")
-    else:
-        await ctx.send(f"❌ Ключ `{key}` не найден.")
+    del_key_db(key)
+    print(f"[БАЗА] Удален ключ: {key}")
+    await ctx.send(f"🗑️ Ключ `{key}` удален.")
 
 @bot.command()
 async def keys(ctx):
@@ -97,9 +114,9 @@ async def keys(ctx):
     if not db_keys:
         await ctx.send("База ключей пуста.")
     else:
-        msg = "**Активные ключи:**\n"
-        for k in db_keys:
-            msg += f"`{k}`\n"
+        msg = "**Активные ключи (Ключ -> HWID):**\n"
+        for k, hwid in db_keys:
+            msg += f"`{k}` -> `{hwid}`\n"
         await ctx.send(msg)
 
 # === FLASK СЕРВЕР ===
@@ -108,15 +125,19 @@ app = Flask(__name__)
 @app.route('/api/check', methods=['GET'])
 def check():
     key = request.args.get('key')
-    if not key:
-        return jsonify({"valid": False, "message": "Missing key"}), 400
+    hwid = request.args.get('hwid')
     
-    if check_key_db(key):
-        print(f"[ПРОВЕРКА] Успешный вход: {key}")
-        return jsonify({"valid": True})
+    if not key or not hwid:
+        return jsonify({"valid": False, "message": "Missing key or HWID"}), 400
+    
+    success, message = check_and_bind_key(key, hwid)
+    
+    if success:
+        print(f"[ПРОВЕРКА] Успешный вход: {key} | HWID: {hwid}")
+        return jsonify({"valid": True, "message": message})
     else:
-        print(f"[ПРОВЕРКА] Отказ. Неверный ключ: {key}")
-        return jsonify({"valid": False, "message": "Invalid Key"}), 403
+        print(f"[ПРОВЕРКА] Отказ: {message} | Key: {key} | HWID: {hwid}")
+        return jsonify({"valid": False, "message": message}), 403
 
 def run_flask():
     port = int(os.environ.get('PORT', 8080))
